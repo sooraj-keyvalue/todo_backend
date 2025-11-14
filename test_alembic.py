@@ -11,17 +11,15 @@ async def check_alembic():
     """Check if alembic version table exists."""
     try:
         async with engine.begin() as conn:
-            result = await conn.execute(
-                text("SELECT version_num FROM alembic_version")
-            )
+            result = await conn.execute(text("SELECT version_num FROM alembic_version"))
             rows = result.fetchall()
-            
+
             print("✓ Alembic version table exists")
             if rows and rows[0][0]:
                 print(f"  Current version: {rows[0][0]}")
             else:
                 print("  Current version: (empty - no migrations yet)")
-            
+
             return True
     except Exception as e:
         print(f"✗ Failed to check alembic version")

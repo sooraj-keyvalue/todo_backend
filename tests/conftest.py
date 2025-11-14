@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 
 from src.core.config import settings
 from src.core.database.session import Base, get_db
@@ -26,15 +27,13 @@ def pytest_configure(config: Any) -> None:
 
 
 # Test database URL (separate from main database)
-TEST_DATABASE_URL = settings.database_url_str.replace(
-    "/todo_db", "/todo_db_test"
-)
+TEST_DATABASE_URL = settings.database_url_str.replace("/todo_db", "/todo_db_test")
 
-# Create test engine
+# Create test engine with NullPool to avoid connection reuse issues
 test_engine = create_async_engine(
     TEST_DATABASE_URL,
     echo=False,
-    poolclass=None,  # Use NullPool for tests to avoid connection issues
+    poolclass=NullPool,  # Don't pool connections in tests
 )
 
 # Create test session factory
@@ -47,49 +46,55 @@ TestSessionLocal = async_sessionmaker(
 )
 
 
+# Track if tables have been created
+_tables_created = False
+
+
 @pytest_asyncio.fixture(scope="function")
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """
     Create a test database session.
-    
+
     This fixture:
-    1. Creates all tables before the test
-    2. Yields a database session
-    3. Rolls back any changes after the test
-    4. Drops all tables after the test
-    
-    This ensures each test runs in isolation with a clean database.
+    1. Creates tables once (first test only)
+    2. Cleans all tables before each test
+    3. Yields a database session for the test
+    4. Closes the session
+
+    Each test starts with clean tables.
     """
-    # Create all tables
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    global _tables_created
 
-    # Create a session for the test
-    async with TestSessionLocal() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
+    # Create tables only once
+    if not _tables_created:
+        async with test_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        _tables_created = True
 
-    # Drop all tables after the test
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+    # Create a session
+    session = TestSessionLocal()
+
+    # Clean all tables before test
+    for table in reversed(Base.metadata.sorted_tables):
+        await session.execute(table.delete())
+    await session.commit()
+
+    try:
+        yield session
+    finally:
+        await session.close()
 
 
 @pytest_asyncio.fixture(scope="function")
 async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     """
     Create a test client with overridden database dependency.
-    
+
     This fixture:
     1. Overrides the get_db dependency to use the test database
     2. Creates an AsyncClient for making HTTP requests
     3. Yields the client for use in tests
-    
+
     Usage:
         async def test_endpoint(client: AsyncClient):
             response = await client.get("/api/v1/items")
