@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 
 from src.core.config import settings
 from src.core.database.session import Base, get_db
@@ -28,12 +29,11 @@ def pytest_configure(config: Any) -> None:
 # Test database URL (separate from main database)
 TEST_DATABASE_URL = settings.database_url_str.replace("/todo_db", "/todo_db_test")
 
-# Create test engine with proper pool settings for testing
+# Create test engine with NullPool to avoid connection reuse issues
 test_engine = create_async_engine(
     TEST_DATABASE_URL,
     echo=False,
-    pool_pre_ping=True,  # Verify connections before using
-    pool_recycle=3600,  # Recycle connections after 1 hour
+    poolclass=NullPool,  # Don't pool connections in tests
 )
 
 # Create test session factory
@@ -57,11 +57,11 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
 
     This fixture:
     1. Creates tables once (first test only)
-    2. Yields a database session for the test
-    3. Cleans up all data after the test
+    2. Cleans all tables before each test
+    3. Yields a database session for the test
     4. Closes the session
 
-    Each test gets a fresh session with clean tables.
+    Each test starts with clean tables.
     """
     global _tables_created
 
@@ -71,17 +71,16 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
             await conn.run_sync(Base.metadata.create_all)
         _tables_created = True
 
-    # Create a session for the test
+    # Create a session
     session = TestSessionLocal()
+
+    # Clean all tables before test
+    for table in reversed(Base.metadata.sorted_tables):
+        await session.execute(table.delete())
+    await session.commit()
+
     try:
         yield session
-        # Clean up all tables after successful test
-        for table in reversed(Base.metadata.sorted_tables):
-            await session.execute(table.delete())
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        raise
     finally:
         await session.close()
 
