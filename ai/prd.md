@@ -1,0 +1,1882 @@
+# Technical PRD – Todo Application (Backend API)
+
+**Version:** 1.0
+**Last Updated:** 2024-11-14
+**Status:** Draft
+
+---
+
+## 1. Overview
+
+This document defines the **technical product requirements** for the Todo Application backend API. It is aligned with the technical architecture defined in `CLAUDE.md` and serves as the single source of truth for backend implementation.
+
+### 1.1 Purpose
+
+Build a production-ready RESTful API for task management with robust authentication, filtering, and observability.
+
+### 1.2 Scope
+
+This PRD covers **Phase 1 (MVP)** backend API development. Future phases (notifications, collaboration, mobile apps) are outlined but not specified in detail.
+
+---
+
+## 2. Technical Stack
+
+| Component | Technology | Version |
+|-----------|-----------|---------|
+| **Language** | Python | 3.12.11+ |
+| **Framework** | FastAPI | Latest |
+| **Database** | PostgreSQL | 15+ |
+| **ORM** | SQLAlchemy (Async) | 2.0+ |
+| **Migrations** | Alembic | Latest |
+| **Package Manager** | uv | Latest |
+| **Testing** | pytest | Latest |
+| **Linting/Formatting** | ruff | Latest |
+| **Type Checking** | mypy | Latest |
+| **Authentication** | JWT (PyJWT) | Latest |
+
+### 2.1 Architecture Style
+
+- **Pattern:** Vertical Slice Architecture
+- **Layers:** API → Service → Repository → Database
+- **Dependency Injection:** FastAPI's built-in DI system
+- **Error Handling:** Centralized middleware
+- **Request Tracking:** UUID-based request IDs
+
+---
+
+## 3. API Design Standards
+
+### 3.1 API Versioning
+
+- **Strategy:** URI-based versioning
+- **Format:** `/api/v1/{resource}`
+- **Current Version:** v1
+
+### 3.2 Response Format
+
+All responses follow the `APIResponse` wrapper pattern defined in CLAUDE.md.
+
+**Success Response:**
+```json
+{
+  "data": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "title": "Buy groceries",
+    "is_completed": false
+  },
+  "meta": {
+    "request_id": "7f3e5c2a-1d4e-4b8a-9c3f-2e5d6a7b8c9d",
+    "timestamp": "2024-01-15T10:30:00Z",
+    "path": "/api/v1/tasks/550e8400-e29b-41d4-a716-446655440000",
+    "method": "GET"
+  }
+}
+```
+
+**Error Response:**
+```json
+{
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "Task with id 550e8400-e29b-41d4-a716-446655440000 not found",
+    "details": null
+  },
+  "meta": {
+    "request_id": "7f3e5c2a-1d4e-4b8a-9c3f-2e5d6a7b8c9d",
+    "timestamp": "2024-01-15T10:30:00Z",
+    "path": "/api/v1/tasks/550e8400-e29b-41d4-a716-446655440000",
+    "method": "GET"
+  }
+}
+```
+
+**Key Points:**
+- No `success` boolean field (HTTP status code indicates success/failure)
+- Separate schemas for success and error responses
+- All responses include metadata with request tracking
+
+### 3.3 HTTP Status Codes
+
+| Code | Usage |
+|------|-------|
+| **200** | Successful GET, PATCH, PUT |
+| **201** | Successful POST (resource created) |
+| **204** | Successful DELETE (no content) |
+| **400** | Bad Request (client error) |
+| **401** | Unauthorized (authentication required) |
+| **403** | Forbidden (insufficient permissions) |
+| **404** | Not Found |
+| **409** | Conflict (duplicate resource) |
+| **422** | Unprocessable Entity (validation error) |
+| **429** | Too Many Requests (rate limit exceeded) |
+| **500** | Internal Server Error |
+
+### 3.4 Pagination
+
+**Strategy:** Page-based pagination (aligned with CLAUDE.md)
+
+**Query Parameters:**
+- `page`: Page number (1-indexed, default: 1)
+- `page_size`: Items per page (default: 20, max: 100)
+
+**Response Format:**
+```json
+{
+  "data": {
+    "items": [...],
+    "pagination": {
+      "page": 1,
+      "page_size": 20,
+      "total": 150,
+      "total_pages": 8
+    }
+  },
+  "meta": { ... }
+}
+```
+
+### 3.5 Filtering & Sorting
+
+**Filter Operations** (aligned with CLAUDE.md QueryHelper):
+
+| Operation | Example | Description |
+|-----------|---------|-------------|
+| `field__eq` | `?priority__eq=high` | Equal |
+| `field__ne` | `?priority__ne=low` | Not equal |
+| `field__gt` | `?created_at__gt=2024-01-01` | Greater than |
+| `field__gte` | `?created_at__gte=2024-01-01` | Greater than or equal |
+| `field__lt` | `?due_date__lt=2024-12-31` | Less than |
+| `field__lte` | `?due_date__lte=2024-12-31` | Less than or equal |
+| `field__like` | `?title__like=grocery` | Case-sensitive LIKE |
+| `field__ilike` | `?title__ilike=grocery` | Case-insensitive LIKE |
+| `field__in` | `?priority__in=high,medium` | IN list |
+| `field__not_in` | `?priority__not_in=low` | NOT IN list |
+| `field__is_null` | `?due_date__is_null=true` | IS NULL / IS NOT NULL |
+
+**Sorting:**
+- Query param: `sort_by` (field name) and `sort_order` (asc/desc)
+- Example: `?sort_by=due_date&sort_order=asc`
+- Default: `sort_by=created_at&sort_order=desc`
+
+**Example Combined Query:**
+```
+GET /api/v1/tasks?
+  is_completed__eq=false&
+  priority__in=high,medium&
+  due_date__gte=2024-01-01&
+  sort_by=due_date&
+  sort_order=asc&
+  page=1&
+  page_size=20
+```
+
+### 3.6 API Documentation
+
+- **Format:** OpenAPI 3.0 (auto-generated by FastAPI)
+- **Interactive Docs:** Swagger UI at `/docs`, ReDoc at `/redoc`
+- **Requirements:**
+  - All endpoints must have descriptions
+  - All request/response models must have examples
+  - All fields must have descriptions
+  - Error responses documented for each endpoint
+
+---
+
+## 4. Data Model
+
+### 4.1 Entity Definitions
+
+#### **User**
+
+```python
+class User:
+    id: UUID (primary key)
+    email: str (unique, max 255 chars, lowercase)
+    password_hash: str (Argon2)
+    full_name: str | None (max 255 chars)
+    is_active: bool (default: True)
+    is_verified: bool (default: False)
+    created_at: datetime (UTC)
+    updated_at: datetime (UTC)
+    last_login_at: datetime | None (UTC)
+```
+
+**Constraints:**
+- `UNIQUE(email)`
+- `CHECK(email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}$')`
+
+**Indexes:**
+```sql
+CREATE UNIQUE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_active ON users(is_active) WHERE is_active = true;
+```
+
+#### **Task**
+
+```python
+class Task:
+    id: UUID (primary key)
+    user_id: UUID (foreign key → User.id)
+    title: str (max 200 chars, required)
+    description: str | None (max 10000 chars)
+    due_date: datetime | None (UTC)
+    is_completed: bool (default: False)
+    priority: enum (low, medium, high, default: medium)
+    completed_at: datetime | None (UTC)
+    created_at: datetime (UTC)
+    updated_at: datetime (UTC)
+    deleted_at: datetime | None (UTC, soft delete)
+```
+
+**Validation Rules:**
+- `title`: Required, 1-200 chars, no leading/trailing whitespace
+- `description`: Optional, max 10000 chars
+- `due_date`: Optional, must be >= current time (timezone-aware)
+- `priority`: One of: `low`, `medium`, `high`
+
+**Constraints:**
+```sql
+-- Title unique per user (excluding deleted)
+CREATE UNIQUE INDEX idx_tasks_user_title ON tasks(user_id, LOWER(title))
+  WHERE deleted_at IS NULL;
+
+-- Due date must be after creation
+ALTER TABLE tasks ADD CONSTRAINT check_due_date_future
+  CHECK (due_date IS NULL OR due_date > created_at);
+
+-- Cascade delete
+ALTER TABLE tasks ADD CONSTRAINT fk_user
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+```
+
+**Indexes:**
+```sql
+CREATE INDEX idx_tasks_user_id ON tasks(user_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_tasks_user_completed ON tasks(user_id, is_completed)
+  WHERE deleted_at IS NULL;
+CREATE INDEX idx_tasks_due_date ON tasks(due_date)
+  WHERE deleted_at IS NULL AND due_date IS NOT NULL;
+CREATE INDEX idx_tasks_priority ON tasks(priority) WHERE deleted_at IS NULL;
+CREATE INDEX idx_tasks_deleted_at ON tasks(deleted_at);
+```
+
+#### **Subtask**
+
+```python
+class Subtask:
+    id: UUID (primary key)
+    task_id: UUID (foreign key → Task.id)
+    title: str (max 200 chars, required)
+    is_completed: bool (default: False)
+    position: int (for ordering, default: 0)
+    created_at: datetime (UTC)
+    updated_at: datetime (UTC)
+```
+
+**Validation Rules:**
+- `title`: Required, 1-200 chars
+- `position`: Non-negative integer
+- Max 50 subtasks per task
+
+**Constraints:**
+```sql
+ALTER TABLE subtasks ADD CONSTRAINT fk_task
+  FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE;
+
+ALTER TABLE subtasks ADD CONSTRAINT check_position_positive
+  CHECK (position >= 0);
+```
+
+**Indexes:**
+```sql
+CREATE INDEX idx_subtasks_task_id ON subtasks(task_id);
+CREATE INDEX idx_subtasks_task_position ON subtasks(task_id, position);
+```
+
+#### **Tag**
+
+```python
+class Tag:
+    id: UUID (primary key)
+    user_id: UUID (foreign key → User.id)
+    name: str (max 50 chars, required)
+    color: str | None (hex color code, e.g., "#FF5733")
+    created_at: datetime (UTC)
+```
+
+**Validation Rules:**
+- `name`: Required, 1-50 chars, alphanumeric + spaces/hyphens
+- `color`: Optional, must match regex `^#[0-9A-Fa-f]{6}$`
+
+**Constraints:**
+```sql
+-- Tag name unique per user
+CREATE UNIQUE INDEX idx_tags_user_name ON tags(user_id, LOWER(name));
+
+ALTER TABLE tags ADD CONSTRAINT fk_user
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+
+ALTER TABLE tags ADD CONSTRAINT check_color_format
+  CHECK (color IS NULL OR color ~* '^#[0-9A-Fa-f]{6}$');
+```
+
+#### **TaskTag** (Junction Table)
+
+```python
+class TaskTag:
+    task_id: UUID (foreign key → Task.id)
+    tag_id: UUID (foreign key → Tag.id)
+    created_at: datetime (UTC)
+
+    # Composite primary key
+    PRIMARY KEY (task_id, tag_id)
+```
+
+**Constraints:**
+```sql
+ALTER TABLE task_tags ADD CONSTRAINT fk_task
+  FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE;
+
+ALTER TABLE task_tags ADD CONSTRAINT fk_tag
+  FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE;
+```
+
+**Indexes:**
+```sql
+CREATE INDEX idx_task_tags_tag_id ON task_tags(tag_id);
+```
+
+### 4.2 Entity Relationship Diagram
+
+```
+User (1) ──< (N) Task
+Task (1) ──< (N) Subtask
+Task (N) ──< (M) Tag (via TaskTag)
+User (1) ──< (N) Tag
+```
+
+### 4.3 Business Rules
+
+| Rule | Description | Error Code |
+|------|-------------|------------|
+| **Max tasks per user** | 500 tasks (excluding deleted) | `MAX_TASKS_EXCEEDED` |
+| **Title uniqueness** | Case-insensitive unique per user | `DUPLICATE_TASK_TITLE` |
+| **Max subtasks** | 50 subtasks per task | `MAX_SUBTASKS_EXCEEDED` |
+| **Max tags per task** | 10 tags per task | `MAX_TAGS_EXCEEDED` |
+| **Completed task restriction** | Cannot add subtasks to completed tasks | `TASK_COMPLETED` |
+| **Past due date restriction** | Due date must be in future at creation | `INVALID_DUE_DATE` |
+| **Empty title restriction** | Title cannot be empty or whitespace-only | `EMPTY_TITLE` |
+| **Tag validation** | Tags must belong to same user as task | `INVALID_TAG_OWNER` |
+
+### 4.4 Soft Delete Implementation
+
+**Strategy:** Set `deleted_at` timestamp instead of hard delete.
+
+**Rules:**
+- Deleted tasks excluded from default queries (use WHERE `deleted_at IS NULL`)
+- User can restore deleted tasks within 30 days
+- After 30 days, background job performs hard delete (Phase 2)
+- Deleted tasks don't count toward max task limit
+- Deleted tasks release their title for reuse
+
+**Endpoints:**
+- `DELETE /tasks/{id}` → Soft delete (set `deleted_at`)
+- `POST /tasks/{id}/restore` → Restore (clear `deleted_at`)
+- `GET /tasks/deleted` → List deleted tasks
+- `DELETE /tasks/{id}/permanent` → Hard delete (admin only, Phase 2)
+
+---
+
+## 5. Authentication & Authorization
+
+### 5.1 Authentication Strategy
+
+**Mechanism:** JWT (JSON Web Tokens)
+
+**Token Types:**
+1. **Access Token:**
+   - Lifespan: 15 minutes
+   - Contains: `user_id`, `email`, `is_verified`
+   - Stored: Client-side (memory, not localStorage)
+
+2. **Refresh Token:**
+   - Lifespan: 7 days
+   - Stored: Database (users table or separate refresh_tokens table)
+   - Rotated on each refresh
+   - Revoked on logout
+
+**Token Payload Example:**
+```json
+{
+  "sub": "550e8400-e29b-41d4-a716-446655440000",
+  "email": "user@example.com",
+  "is_verified": true,
+  "exp": 1704963000,
+  "iat": 1704962100,
+  "jti": "unique-token-id"
+}
+```
+
+### 5.2 Password Security
+
+- **Algorithm:** Argon2id (via `argon2-cffi`)
+- **Requirements:**
+  - Minimum 8 characters
+  - At least one uppercase letter
+  - At least one lowercase letter
+  - At least one digit
+  - At least one special character
+- **Storage:** Never store plaintext, only hashed passwords
+
+### 5.3 Authentication Flows
+
+#### **Registration Flow**
+
+1. `POST /api/v1/auth/register`
+   - Request: `{ email, password, full_name? }`
+   - Validation: Email format, password strength, email uniqueness
+   - Response: 201 Created with user data (no tokens)
+   - Action: Send verification email (Phase 2)
+
+#### **Login Flow**
+
+1. `POST /api/v1/auth/login`
+   - Request: `{ email, password }`
+   - Validation: Credentials match
+   - Response: 200 OK with `{ access_token, refresh_token, user }`
+   - Action: Update `last_login_at`
+
+#### **Token Refresh Flow**
+
+1. `POST /api/v1/auth/refresh`
+   - Request: `{ refresh_token }`
+   - Validation: Token valid and not revoked
+   - Response: 200 OK with new `{ access_token, refresh_token }`
+   - Action: Rotate refresh token (revoke old, issue new)
+
+#### **Logout Flow**
+
+1. `POST /api/v1/auth/logout`
+   - Request: Authenticated (access token in header)
+   - Action: Revoke all refresh tokens for user
+   - Response: 204 No Content
+
+#### **Password Reset Flow** (Phase 2)
+
+1. `POST /api/v1/auth/forgot-password`
+   - Request: `{ email }`
+   - Action: Send reset email with token
+
+2. `POST /api/v1/auth/reset-password`
+   - Request: `{ token, new_password }`
+   - Action: Validate token and update password
+
+### 5.4 Authorization
+
+**Phase 1:** Single-user ownership model
+- Users can only access their own resources
+- Enforced in service layer: `user_id` filter on all queries
+
+**Phase 2:** Role-Based Access Control (RBAC)
+- Roles: `user`, `admin`
+- Admins can view all resources
+- Permission checks in middleware
+
+---
+
+## 6. API Endpoints Specification
+
+### 6.1 Authentication Endpoints
+
+#### `POST /api/v1/auth/register`
+
+**Description:** Register a new user account.
+
+**Request:**
+```json
+{
+  "email": "user@example.com",
+  "password": "SecurePass123!",
+  "full_name": "John Doe"
+}
+```
+
+**Response:** `201 Created`
+```json
+{
+  "data": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "email": "user@example.com",
+    "full_name": "John Doe",
+    "is_active": true,
+    "is_verified": false,
+    "created_at": "2024-01-15T10:30:00Z"
+  },
+  "meta": { ... }
+}
+```
+
+**Errors:**
+- `409 CONFLICT` - Email already exists
+- `422 VALIDATION_ERROR` - Invalid email or weak password
+
+---
+
+#### `POST /api/v1/auth/login`
+
+**Description:** Authenticate user and receive tokens.
+
+**Request:**
+```json
+{
+  "email": "user@example.com",
+  "password": "SecurePass123!"
+}
+```
+
+**Response:** `200 OK`
+```json
+{
+  "data": {
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "token_type": "Bearer",
+    "expires_in": 900,
+    "user": {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "email": "user@example.com",
+      "full_name": "John Doe"
+    }
+  },
+  "meta": { ... }
+}
+```
+
+**Errors:**
+- `401 UNAUTHORIZED` - Invalid credentials
+- `403 FORBIDDEN` - Account inactive
+
+---
+
+#### `POST /api/v1/auth/refresh`
+
+**Description:** Refresh access token using refresh token.
+
+**Request:**
+```json
+{
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+**Response:** `200 OK`
+```json
+{
+  "data": {
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "token_type": "Bearer",
+    "expires_in": 900
+  },
+  "meta": { ... }
+}
+```
+
+**Errors:**
+- `401 UNAUTHORIZED` - Invalid or expired refresh token
+
+---
+
+#### `POST /api/v1/auth/logout`
+
+**Description:** Logout user and revoke refresh tokens.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Response:** `204 No Content`
+
+---
+
+### 6.2 User Profile Endpoints
+
+#### `GET /api/v1/me`
+
+**Description:** Get current user profile.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Response:** `200 OK`
+```json
+{
+  "data": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "email": "user@example.com",
+    "full_name": "John Doe",
+    "is_active": true,
+    "is_verified": false,
+    "created_at": "2024-01-15T10:30:00Z",
+    "last_login_at": "2024-01-16T08:00:00Z",
+    "task_count": 42
+  },
+  "meta": { ... }
+}
+```
+
+---
+
+#### `PATCH /api/v1/me`
+
+**Description:** Update current user profile.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Request:**
+```json
+{
+  "full_name": "John Smith"
+}
+```
+
+**Response:** `200 OK` (updated user object)
+
+---
+
+#### `DELETE /api/v1/me`
+
+**Description:** Delete user account and all associated data.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Response:** `204 No Content`
+
+**Note:** Cascades to all tasks, subtasks, tags, and task_tags.
+
+---
+
+### 6.3 Task Endpoints
+
+#### `POST /api/v1/tasks`
+
+**Description:** Create a new task.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Request:**
+```json
+{
+  "title": "Buy groceries",
+  "description": "Milk, eggs, bread",
+  "due_date": "2024-01-20T18:00:00Z",
+  "priority": "medium"
+}
+```
+
+**Response:** `201 Created`
+```json
+{
+  "data": {
+    "id": "660f9500-f39c-52e5-b827-557766550111",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
+    "title": "Buy groceries",
+    "description": "Milk, eggs, bread",
+    "due_date": "2024-01-20T18:00:00Z",
+    "is_completed": false,
+    "priority": "medium",
+    "completed_at": null,
+    "created_at": "2024-01-15T10:30:00Z",
+    "updated_at": "2024-01-15T10:30:00Z",
+    "deleted_at": null,
+    "subtasks_count": 0,
+    "tags": []
+  },
+  "meta": { ... }
+}
+```
+
+**Headers (Response):**
+- `Location: /api/v1/tasks/660f9500-f39c-52e5-b827-557766550111`
+
+**Errors:**
+- `409 DUPLICATE_TASK_TITLE` - Title already exists for user
+- `422 VALIDATION_ERROR` - Invalid input
+- `422 MAX_TASKS_EXCEEDED` - User has 500 tasks
+
+---
+
+#### `GET /api/v1/tasks`
+
+**Description:** List tasks with filtering, sorting, and pagination.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Query Parameters:**
+- Filtering: `is_completed__eq`, `priority__in`, `due_date__gte`, `title__ilike`, etc.
+- Sorting: `sort_by`, `sort_order`
+- Pagination: `page`, `page_size`
+
+**Example:**
+```
+GET /api/v1/tasks?
+  is_completed__eq=false&
+  priority__in=high,medium&
+  sort_by=due_date&
+  sort_order=asc&
+  page=1&
+  page_size=20
+```
+
+**Response:** `200 OK`
+```json
+{
+  "data": {
+    "items": [
+      {
+        "id": "660f9500-f39c-52e5-b827-557766550111",
+        "title": "Buy groceries",
+        ...
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "page_size": 20,
+      "total": 42,
+      "total_pages": 3
+    }
+  },
+  "meta": { ... }
+}
+```
+
+---
+
+#### `GET /api/v1/tasks/{task_id}`
+
+**Description:** Get a single task by ID.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Response:** `200 OK`
+```json
+{
+  "data": {
+    "id": "660f9500-f39c-52e5-b827-557766550111",
+    "title": "Buy groceries",
+    "description": "Milk, eggs, bread",
+    "due_date": "2024-01-20T18:00:00Z",
+    "is_completed": false,
+    "priority": "medium",
+    "completed_at": null,
+    "created_at": "2024-01-15T10:30:00Z",
+    "updated_at": "2024-01-15T10:30:00Z",
+    "deleted_at": null,
+    "subtasks": [
+      {
+        "id": "770fa611-g49d-63f6-c938-668877661222",
+        "title": "Buy milk",
+        "is_completed": false,
+        "position": 0
+      }
+    ],
+    "tags": [
+      {
+        "id": "880fb722-h59e-74g7-d049-779988772333",
+        "name": "Shopping",
+        "color": "#FF5733"
+      }
+    ]
+  },
+  "meta": { ... }
+}
+```
+
+**Errors:**
+- `404 NOT_FOUND` - Task not found or doesn't belong to user
+
+---
+
+#### `PATCH /api/v1/tasks/{task_id}`
+
+**Description:** Update a task (partial update).
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Request:**
+```json
+{
+  "title": "Buy groceries and cook dinner",
+  "priority": "high"
+}
+```
+
+**Response:** `200 OK` (updated task object)
+
+**Errors:**
+- `404 NOT_FOUND` - Task not found
+- `409 DUPLICATE_TASK_TITLE` - New title conflicts with existing task
+- `422 VALIDATION_ERROR` - Invalid input
+
+---
+
+#### `DELETE /api/v1/tasks/{task_id}`
+
+**Description:** Soft delete a task.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Response:** `204 No Content`
+
+**Errors:**
+- `404 NOT_FOUND` - Task not found
+
+---
+
+#### `POST /api/v1/tasks/{task_id}/complete`
+
+**Description:** Mark task as completed.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Response:** `200 OK`
+```json
+{
+  "data": {
+    "id": "660f9500-f39c-52e5-b827-557766550111",
+    "is_completed": true,
+    "completed_at": "2024-01-16T14:30:00Z",
+    ...
+  },
+  "meta": { ... }
+}
+```
+
+**Errors:**
+- `404 NOT_FOUND` - Task not found
+- `422 TASK_ALREADY_COMPLETED` - Task already completed
+
+---
+
+#### `POST /api/v1/tasks/{task_id}/uncomplete`
+
+**Description:** Mark task as incomplete.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Response:** `200 OK` (updated task object)
+
+---
+
+#### `POST /api/v1/tasks/{task_id}/restore`
+
+**Description:** Restore a soft-deleted task.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Response:** `200 OK` (restored task object)
+
+**Errors:**
+- `404 NOT_FOUND` - Task not found in deleted items
+- `409 DUPLICATE_TASK_TITLE` - Restored title conflicts with existing task
+
+---
+
+#### `GET /api/v1/tasks/deleted`
+
+**Description:** List soft-deleted tasks.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Query Parameters:** Same as `GET /tasks` (pagination, sorting)
+
+**Response:** `200 OK` (paginated list of deleted tasks)
+
+---
+
+#### `GET /api/v1/tasks/overdue`
+
+**Description:** Get all overdue tasks (due_date < now, not completed).
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Response:** `200 OK` (paginated list)
+
+---
+
+#### `GET /api/v1/tasks/today`
+
+**Description:** Get tasks due today.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Response:** `200 OK` (paginated list)
+
+---
+
+#### `GET /api/v1/tasks/upcoming`
+
+**Description:** Get tasks due in next 7 days.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Response:** `200 OK` (paginated list)
+
+---
+
+### 6.4 Subtask Endpoints
+
+#### `POST /api/v1/tasks/{task_id}/subtasks`
+
+**Description:** Add a subtask to a task.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Request:**
+```json
+{
+  "title": "Buy milk",
+  "position": 0
+}
+```
+
+**Response:** `201 Created`
+```json
+{
+  "data": {
+    "id": "770fa611-g49d-63f6-c938-668877661222",
+    "task_id": "660f9500-f39c-52e5-b827-557766550111",
+    "title": "Buy milk",
+    "is_completed": false,
+    "position": 0,
+    "created_at": "2024-01-15T10:35:00Z",
+    "updated_at": "2024-01-15T10:35:00Z"
+  },
+  "meta": { ... }
+}
+```
+
+**Errors:**
+- `404 NOT_FOUND` - Task not found
+- `422 TASK_COMPLETED` - Cannot add subtask to completed task
+- `422 MAX_SUBTASKS_EXCEEDED` - Task already has 50 subtasks
+
+---
+
+#### `PATCH /api/v1/subtasks/{subtask_id}`
+
+**Description:** Update a subtask.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Request:**
+```json
+{
+  "title": "Buy whole milk",
+  "is_completed": true
+}
+```
+
+**Response:** `200 OK` (updated subtask object)
+
+---
+
+#### `DELETE /api/v1/subtasks/{subtask_id}`
+
+**Description:** Delete a subtask.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Response:** `204 No Content`
+
+---
+
+### 6.5 Tag Endpoints
+
+#### `POST /api/v1/tags`
+
+**Description:** Create a new tag.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Request:**
+```json
+{
+  "name": "Shopping",
+  "color": "#FF5733"
+}
+```
+
+**Response:** `201 Created`
+```json
+{
+  "data": {
+    "id": "880fb722-h59e-74g7-d049-779988772333",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "Shopping",
+    "color": "#FF5733",
+    "created_at": "2024-01-15T10:40:00Z"
+  },
+  "meta": { ... }
+}
+```
+
+**Errors:**
+- `409 DUPLICATE_TAG_NAME` - Tag name already exists for user
+
+---
+
+#### `GET /api/v1/tags`
+
+**Description:** List all tags for current user.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Response:** `200 OK`
+```json
+{
+  "data": [
+    {
+      "id": "880fb722-h59e-74g7-d049-779988772333",
+      "name": "Shopping",
+      "color": "#FF5733",
+      "task_count": 5
+    }
+  ],
+  "meta": { ... }
+}
+```
+
+---
+
+#### `PATCH /api/v1/tags/{tag_id}`
+
+**Description:** Update a tag.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Request:**
+```json
+{
+  "name": "Groceries",
+  "color": "#33FF57"
+}
+```
+
+**Response:** `200 OK` (updated tag object)
+
+---
+
+#### `DELETE /api/v1/tags/{tag_id}`
+
+**Description:** Delete a tag (removes from all tasks).
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Response:** `204 No Content`
+
+---
+
+#### `POST /api/v1/tasks/{task_id}/tags/{tag_id}`
+
+**Description:** Add a tag to a task.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Response:** `201 Created`
+
+**Errors:**
+- `404 NOT_FOUND` - Task or tag not found
+- `409 TAG_ALREADY_ADDED` - Tag already on task
+- `422 MAX_TAGS_EXCEEDED` - Task already has 10 tags
+- `403 INVALID_TAG_OWNER` - Tag doesn't belong to user
+
+---
+
+#### `DELETE /api/v1/tasks/{task_id}/tags/{tag_id}`
+
+**Description:** Remove a tag from a task.
+
+**Headers:** `Authorization: Bearer {access_token}`
+
+**Response:** `204 No Content`
+
+---
+
+### 6.6 Health Check Endpoints
+
+#### `GET /health/live`
+
+**Description:** Liveness probe (is service running?).
+
+**Response:** `200 OK`
+```json
+{
+  "status": "ok",
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+---
+
+#### `GET /health/ready`
+
+**Description:** Readiness probe (can service handle traffic?).
+
+**Response:** `200 OK`
+```json
+{
+  "status": "ready",
+  "database": "connected",
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Response (unhealthy):** `503 Service Unavailable`
+```json
+{
+  "status": "not_ready",
+  "database": "disconnected",
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+---
+
+## 7. Error Codes Catalog
+
+| Code | HTTP Status | Description |
+|------|-------------|-------------|
+| `NOT_FOUND` | 404 | Resource not found |
+| `VALIDATION_ERROR` | 422 | Input validation failed |
+| `UNAUTHORIZED` | 401 | Authentication required |
+| `INVALID_CREDENTIALS` | 401 | Email/password incorrect |
+| `FORBIDDEN` | 403 | Insufficient permissions |
+| `DUPLICATE_EMAIL` | 409 | Email already registered |
+| `DUPLICATE_TASK_TITLE` | 409 | Task title already exists |
+| `DUPLICATE_TAG_NAME` | 409 | Tag name already exists |
+| `MAX_TASKS_EXCEEDED` | 422 | User has reached 500 task limit |
+| `MAX_SUBTASKS_EXCEEDED` | 422 | Task has reached 50 subtask limit |
+| `MAX_TAGS_EXCEEDED` | 422 | Task has reached 10 tag limit |
+| `TASK_COMPLETED` | 422 | Cannot modify completed task |
+| `TASK_ALREADY_COMPLETED` | 422 | Task already marked complete |
+| `INVALID_DUE_DATE` | 422 | Due date must be in future |
+| `EMPTY_TITLE` | 422 | Title cannot be empty |
+| `WEAK_PASSWORD` | 422 | Password doesn't meet requirements |
+| `INVALID_TAG_OWNER` | 403 | Tag doesn't belong to user |
+| `INVALID_REFRESH_TOKEN` | 401 | Refresh token invalid or expired |
+| `TOKEN_EXPIRED` | 401 | Access token expired |
+| `ACCOUNT_INACTIVE` | 403 | User account deactivated |
+| `TAG_ALREADY_ADDED` | 409 | Tag already associated with task |
+| `INTEGRITY_ERROR` | 409 | Database constraint violation |
+| `INTERNAL_SERVER_ERROR` | 500 | Unexpected server error |
+| `RATE_LIMIT_EXCEEDED` | 429 | Too many requests |
+
+**Validation Error Format:**
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Invalid input",
+    "details": {
+      "title": ["Title cannot be empty"],
+      "due_date": ["Due date must be in the future"],
+      "priority": ["Priority must be one of: low, medium, high"]
+    }
+  },
+  "meta": { ... }
+}
+```
+
+---
+
+## 8. Security Requirements
+
+### 8.1 OWASP Top 10 Compliance
+
+| Risk | Mitigation |
+|------|------------|
+| **SQL Injection** | Use SQLAlchemy ORM (parameterized queries) |
+| **XSS** | Pydantic validation, no HTML in error messages |
+| **CSRF** | Not applicable (API uses JWT, no cookies) |
+| **Broken Authentication** | JWT with short expiry, secure password hashing |
+| **Sensitive Data Exposure** | HTTPS only, no logging of passwords/tokens |
+| **Broken Access Control** | User ownership validation in service layer |
+| **Security Misconfiguration** | Environment-based config, no default credentials |
+| **Insecure Deserialization** | Pydantic validation on all inputs |
+| **Using Components with Known Vulnerabilities** | Dependabot alerts, regular updates |
+| **Insufficient Logging & Monitoring** | Structured logging with request_id |
+
+### 8.2 Input Validation
+
+- **All inputs validated** via Pydantic schemas
+- **Maximum lengths enforced** on all string fields
+- **Type checking** enforced (UUID, datetime, enum, etc.)
+- **Regex validation** for email, color codes
+- **Range validation** for integers (position >= 0, page >= 1)
+
+### 8.3 Rate Limiting (Phase 1 - Basic)
+
+**Strategy:** Per-IP rate limiting
+
+**Limits:**
+- `/api/v1/auth/*` endpoints: 5 requests/minute
+- All other endpoints: 100 requests/minute
+
+**Response Headers:**
+- `X-RateLimit-Limit`: Total allowed
+- `X-RateLimit-Remaining`: Requests remaining
+- `X-RateLimit-Reset`: Unix timestamp when limit resets
+
+**Phase 2:** Per-user rate limiting with Redis
+
+### 8.4 HTTPS Enforcement
+
+- **All traffic over HTTPS**
+- **HTTP redirects to HTTPS** (handled by load balancer/nginx)
+- **HSTS header:** `Strict-Transport-Security: max-age=31536000`
+
+### 8.5 CORS Configuration
+
+**Phase 1:**
+- Allow specific origins (e.g., `https://app.example.com`)
+- Allow credentials: `Access-Control-Allow-Credentials: true`
+- Allowed methods: `GET, POST, PATCH, DELETE`
+- Allowed headers: `Authorization, Content-Type`
+
+---
+
+## 9. Testing Requirements
+
+### 9.1 Test-Driven Development (TDD)
+
+**Process:**
+1. Write failing test
+2. Implement minimum code to pass
+3. Refactor while keeping tests green
+4. All new features require tests BEFORE implementation
+
+### 9.2 Test Coverage
+
+**Requirements:**
+- **Minimum coverage:** 80%
+- **Target coverage:** 90%
+- **Critical paths:** 100% (authentication, payment, data loss scenarios)
+
+**Coverage measurement:**
+```bash
+pytest --cov=src --cov-report=term-missing --cov-fail-under=80
+```
+
+### 9.3 Test Types
+
+#### **Unit Tests**
+- **Location:** Alongside feature in `features/{feature}/tests/`
+- **Scope:** Individual functions/methods
+- **Mocking:** Mock external dependencies (database, external APIs)
+- **Coverage:** All service methods, all repository methods
+
+#### **Integration Tests**
+- **Location:** `features/{feature}/tests/`
+- **Scope:** API endpoints with real database
+- **Database:** Separate test database, rolled back after each test
+- **Coverage:** All API endpoints
+
+#### **Test Naming Convention**
+```python
+# Unit test
+def test_create_todo_validates_empty_title():
+    pass
+
+# Integration test
+def test_create_todo_api_returns_201_when_valid_data():
+    pass
+
+# Negative test
+def test_create_todo_returns_409_when_duplicate_title():
+    pass
+```
+
+### 9.4 Test Database
+
+**Strategy:**
+- Separate PostgreSQL database for testing
+- Use pytest fixtures for database setup/teardown
+- Rollback transactions after each test
+- Seed data via factories (Factory Boy)
+
+**Example:**
+```python
+@pytest.fixture
+async def db_session():
+    # Create tables
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    # Provide session
+    async with async_session_maker() as session:
+        yield session
+
+    # Drop tables
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+```
+
+### 9.5 Test Data Factories
+
+Use Factory Boy for generating test data:
+
+```python
+class UserFactory(factory.Factory):
+    class Meta:
+        model = User
+
+    email = factory.Faker('email')
+    password_hash = 'hashed_password'
+    full_name = factory.Faker('name')
+
+class TaskFactory(factory.Factory):
+    class Meta:
+        model = Task
+
+    title = factory.Faker('sentence', nb_words=4)
+    user = factory.SubFactory(UserFactory)
+```
+
+---
+
+## 10. Observability
+
+### 10.1 Logging
+
+**Format:** Structured JSON logs
+
+**Minimum fields:**
+```json
+{
+  "timestamp": "2024-01-15T10:30:00Z",
+  "level": "INFO",
+  "request_id": "7f3e5c2a-1d4e-4b8a-9c3f-2e5d6a7b8c9d",
+  "path": "/api/v1/tasks",
+  "method": "GET",
+  "user_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status_code": 200,
+  "duration_ms": 45,
+  "message": "Request completed"
+}
+```
+
+**Log Levels:**
+- `DEBUG`: Detailed diagnostic info (development only)
+- `INFO`: General informational messages
+- `WARNING`: Warning messages (deprecated features, unusual but handled)
+- `ERROR`: Error messages (handled exceptions)
+- `CRITICAL`: Critical issues (unhandled exceptions, service down)
+
+**What to Log:**
+- All requests (path, method, status, duration)
+- All errors (with request context, stack trace)
+- Authentication events (login, logout, failed attempts)
+- Business events (task created, task completed)
+
+**What NOT to Log:**
+- Passwords (plaintext or hashed)
+- Access tokens or refresh tokens
+- Personal identifiable information (PII) beyond user_id
+- Full request/response bodies (unless debugging)
+
+**Library:** Python `logging` with JSON formatter
+
+### 10.2 Request Tracing
+
+**Implementation:**
+- Generate UUID for each request in `RequestTrackingMiddleware`
+- Store in `request.state.request_id`
+- Include in all logs
+- Return in response header: `X-Request-ID`
+- Include in API response `meta.request_id`
+
+**Phase 2:** OpenTelemetry for distributed tracing
+
+### 10.3 Health Checks
+
+**Endpoints:**
+- `GET /health/live` - Liveness (200 = service running)
+- `GET /health/ready` - Readiness (200 = can handle traffic, includes DB check)
+
+**Kubernetes Configuration:**
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health/live
+    port: 8000
+  initialDelaySeconds: 10
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /health/ready
+    port: 8000
+  initialDelaySeconds: 5
+  periodSeconds: 5
+```
+
+### 10.4 Monitoring Metrics (Phase 2+)
+
+Deferred to Phase 2. Basic health checks and logging sufficient for MVP.
+
+**Future metrics:**
+- Request latency (p50, p95, p99)
+- Error rate by endpoint
+- Database connection pool utilization
+- Active users
+- Tasks created/completed per hour
+
+---
+
+## 11. Performance Requirements
+
+### 11.1 Service Level Objectives (SLOs)
+
+| Metric | Target |
+|--------|--------|
+| **API Latency (p95)** | < 200ms |
+| **API Latency (p99)** | < 500ms |
+| **Uptime** | 99.5% (monthly) |
+| **Database Queries** | No N+1 queries |
+| **Max Response Size** | 5 MB |
+
+### 11.2 Database Performance
+
+**Connection Pooling:**
+- Pool size: 10 connections
+- Max overflow: 20 connections
+- Connection timeout: 30 seconds
+- Pool recycle: 3600 seconds (1 hour)
+
+**Query Optimization:**
+- All foreign keys have indexes
+- Composite indexes for common queries (user_id + is_completed)
+- Use `select_related` / `joinedload` to prevent N+1 queries
+- Pagination enforced (max 100 items per page)
+
+**Example N+1 Prevention:**
+```python
+# Bad - N+1 query
+tasks = await db.execute(select(Task))
+for task in tasks:
+    tags = await db.execute(select(Tag).filter(Tag.task_id == task.id))
+
+# Good - Single query with join
+tasks = await db.execute(
+    select(Task).options(joinedload(Task.tags))
+)
+```
+
+### 11.3 Caching (Phase 2)
+
+Not implemented in Phase 1. Future consideration: Redis for:
+- User profile caching
+- Tag list caching
+- Aggregated counts
+
+---
+
+## 12. DevOps & Deployment
+
+### 12.1 Infrastructure
+
+**Phase 1:**
+- **Platform:** Docker containers
+- **Orchestration:** Docker Compose (local), Kubernetes (production - optional)
+- **Cloud Provider:** AWS / GCP / Azure (TBD)
+- **Database:** Managed PostgreSQL (RDS / Cloud SQL / Azure Database)
+
+**Phase 2:**
+- Kubernetes for orchestration
+- Auto-scaling based on CPU/memory
+- Load balancer with health checks
+
+### 12.2 Environment Variables
+
+**Required:**
+```bash
+# Database
+DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/todo_db
+
+# Security
+SECRET_KEY=long-random-secret-key-for-jwt-signing
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=15
+REFRESH_TOKEN_EXPIRE_DAYS=7
+
+# Environment
+ENVIRONMENT=development  # development, staging, production
+DEBUG=false
+
+# Database Connection Pool
+DB_POOL_SIZE=10
+DB_MAX_OVERFLOW=20
+
+# CORS
+ALLOWED_ORIGINS=https://app.example.com,https://staging.app.example.com
+
+# Rate Limiting
+RATE_LIMIT_ENABLED=true
+```
+
+**Secrets Management:**
+- Development: `.env` file (gitignored)
+- Production: AWS Secrets Manager / GCP Secret Manager / Vault
+
+### 12.3 Database Migrations
+
+**Tool:** Alembic
+
+**Workflow:**
+1. Make model changes in `models.py`
+2. Generate migration: `alembic revision --autogenerate -m "Add user table"`
+3. Review generated migration in `alembic/versions/`
+4. Apply migration: `alembic upgrade head`
+5. Rollback if needed: `alembic downgrade -1`
+
+**CI/CD Integration:**
+- Migrations run automatically on deployment
+- Rollback strategy: Keep previous version deployed until migration succeeds
+
+### 12.4 Backup Strategy
+
+**Database Backups:**
+- **Frequency:** Daily automated backups
+- **Retention:** 30 days
+- **Type:** Full backups + point-in-time recovery
+- **Storage:** Cloud provider's backup service (RDS automated backups)
+- **Testing:** Monthly restore test to verify backups
+
+**Application Code:**
+- Version controlled in Git
+- Tagged releases for each deployment
+- Docker images stored in container registry
+
+### 12.5 CI/CD Pipeline
+
+**Tool:** GitHub Actions (primary choice)
+
+**Pipeline Stages:**
+
+1. **Lint & Format Check**
+   ```bash
+   ruff check .
+   ruff format --check .
+   ```
+
+2. **Type Checking**
+   ```bash
+   mypy src
+   ```
+
+3. **Unit Tests**
+   ```bash
+   pytest tests/unit --cov=src --cov-fail-under=80
+   ```
+
+4. **Integration Tests**
+   ```bash
+   pytest tests/integration
+   ```
+
+5. **Build Docker Image**
+   ```bash
+   docker build -t todo-api:${GITHUB_SHA} .
+   ```
+
+6. **Push to Registry**
+   ```bash
+   docker push todo-api:${GITHUB_SHA}
+   ```
+
+7. **Deploy (on main branch only)**
+   - Staging: Auto-deploy on merge to `main`
+   - Production: Manual approval required
+
+**Pre-commit Hooks:**
+```bash
+# .pre-commit-config.yaml
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff-check
+        entry: ruff check
+        language: system
+        types: [python]
+
+      - id: ruff-format
+        name: ruff-format
+        entry: ruff format
+        language: system
+        types: [python]
+
+      - id: mypy
+        name: mypy
+        entry: mypy
+        language: system
+        types: [python]
+
+      - id: pytest
+        name: pytest
+        entry: pytest
+        language: system
+        pass_filenames: false
+```
+
+### 12.6 Docker Configuration
+
+**Dockerfile:**
+```dockerfile
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install uv
+RUN pip install uv
+
+# Copy dependency files
+COPY pyproject.toml .
+
+# Install dependencies
+RUN uv sync --frozen
+
+# Copy application code
+COPY src/ src/
+
+# Run migrations and start server
+CMD ["sh", "-c", "alembic upgrade head && uvicorn src.main:app --host 0.0.0.0 --port 8000"]
+```
+
+**docker-compose.yml (local development):**
+```yaml
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: todo_user
+      POSTGRES_PASSWORD: todo_pass
+      POSTGRES_DB: todo_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://todo_user:todo_pass@db:5432/todo_db
+      SECRET_KEY: dev-secret-key
+      DEBUG: true
+    depends_on:
+      - db
+    volumes:
+      - ./src:/app/src
+
+volumes:
+  postgres_data:
+```
+
+### 12.7 Deployment Strategy
+
+**Blue-Green Deployment:**
+1. Deploy new version to "green" environment
+2. Run smoke tests on green
+3. Switch traffic from blue to green
+4. Keep blue running for 1 hour (quick rollback)
+5. Decommission blue
+
+**Rollback Plan:**
+1. Switch traffic back to blue environment
+2. Investigate issue
+3. Fix and redeploy
+
+---
+
+## 13. Timezone & Internationalization
+
+### 13.1 Timezone Handling
+
+**Storage:**
+- All `datetime` fields stored as **UTC** in database
+- Use `TIMESTAMP WITH TIME ZONE` in PostgreSQL
+
+**API:**
+- Accept ISO-8601 format with timezone: `2024-01-15T10:30:00Z`
+- Return ISO-8601 format with timezone: `2024-01-15T10:30:00Z`
+- Validation: Reject naive datetimes (no timezone)
+
+**Python:**
+```python
+from datetime import datetime, timezone
+
+# Always use timezone-aware datetimes
+now = datetime.now(timezone.utc)
+
+# Pydantic validation
+from pydantic import field_validator
+
+class TaskCreate(BaseModel):
+    due_date: datetime | None
+
+    @field_validator('due_date')
+    def validate_timezone_aware(cls, v):
+        if v and v.tzinfo is None:
+            raise ValueError('Datetime must be timezone-aware')
+        return v
+```
+
+**User Timezone (Phase 2):**
+- Add `timezone` field to User model (e.g., "America/New_York")
+- Convert timestamps to user's timezone for display
+
+### 13.2 Character Encoding
+
+- **Database:** UTF-8
+- **API:** UTF-8 (Content-Type: application/json; charset=utf-8)
+- **Validation:** Allow Unicode characters in title, description, name fields
+
+---
+
+## 14. Future Enhancements (Phase 2+)
+
+### 14.1 Phase 2 Features
+
+**Reminders & Notifications:**
+- Background worker system (Celery or RQ)
+- Redis/RabbitMQ message broker
+- Scheduled reminders via cron jobs
+- Email notifications
+- Push notifications (web push API)
+
+**Advanced Search:**
+- Full-text search on title + description
+- PostgreSQL full-text search or Elasticsearch
+- Fuzzy matching
+- Search suggestions
+
+**User Management:**
+- Email verification flow
+- Password reset flow
+- Account recovery
+- Social login (Google, GitHub OAuth)
+
+**Performance:**
+- Redis caching (user profiles, tag lists)
+- Database query optimization (EXPLAIN ANALYZE)
+- CDN for static assets
+
+**Monitoring:**
+- Prometheus metrics
+- Grafana dashboards
+- APM (Application Performance Monitoring)
+- Error tracking (Sentry)
+
+### 14.2 Phase 3 Features
+
+**Collaboration:**
+- Share tasks with other users
+- Assign tasks to collaborators
+- Comments on tasks
+- Activity feed
+
+**Mobile Apps:**
+- React Native mobile app
+- Push notifications
+- Offline mode with sync
+
+**Advanced Features:**
+- Recurring tasks
+- Task templates
+- Calendar integration (Google Calendar, Outlook)
+- File attachments
+- Task dependencies
+- Gantt chart view
+- AI-based task suggestions
+
+**Admin Features:**
+- Admin dashboard
+- User management
+- Analytics and reporting
+- Feature flags
+
+---
+
+## 15. Success Metrics (Phase 1)
+
+### 15.1 Technical Metrics
+
+- **API Uptime:** 99.5% or higher
+- **Test Coverage:** 80% or higher
+- **API Response Time:** p95 < 200ms
+- **Error Rate:** < 1% of requests
+- **Deployment Frequency:** At least weekly
+
+### 15.2 Product Metrics (Phase 2)
+
+Deferred to Phase 2:
+- Daily Active Users (DAU)
+- Task completion rate
+- User retention (7-day, 30-day)
+- Average tasks per user
+- User satisfaction (NPS score)
+
+---
+
+## 16. Open Questions & Decisions Needed
+
+| # | Question | Status | Decision |
+|---|----------|--------|----------|
+| 1 | Which cloud provider? (AWS, GCP, Azure) | Open | TBD |
+| 2 | Background worker for Phase 2? (Celery vs RQ) | Open | TBD |
+| 3 | Monitoring tool? (Prometheus + Grafana vs Datadog) | Open | Phase 2 |
+| 4 | Error tracking? (Sentry vs Rollbar) | Open | Phase 2 |
+| 5 | Email service? (SendGrid vs SES vs Mailgun) | Open | Phase 2 |
+| 6 | CI/CD tool confirmed? (GitHub Actions vs GitLab CI) | Open | **GitHub Actions** |
+| 7 | Hard delete deleted tasks after how many days? | Open | **30 days** |
+| 8 | Max password length? | Open | **128 chars** |
+| 9 | Session management strategy? | Open | **JWT only (stateless)** |
+| 10 | Support recurring tasks in Phase 1? | Closed | **No - Phase 3** |
+
+---
+
+## 17. Appendix
+
+### 17.1 Glossary
+
+- **JWT:** JSON Web Token - Token-based authentication mechanism
+- **UUID:** Universally Unique Identifier - 128-bit identifier
+- **ORM:** Object-Relational Mapping - SQLAlchemy
+- **TDD:** Test-Driven Development
+- **RBAC:** Role-Based Access Control
+- **SLO:** Service Level Objective
+- **UTC:** Coordinated Universal Time
+- **HSTS:** HTTP Strict Transport Security
+- **CORS:** Cross-Origin Resource Sharing
+- **OWASP:** Open Web Application Security Project
+
+### 17.2 References
+
+- CLAUDE.md - Technical architecture and patterns
+- FastAPI Documentation: https://fastapi.tiangolo.com
+- SQLAlchemy Documentation: https://docs.sqlalchemy.org
+- Pydantic Documentation: https://docs.pydantic.dev
+- Alembic Documentation: https://alembic.sqlalchemy.org
+
+### 17.3 Document History
+
+| Version | Date | Author | Changes |
+|---------|------|--------|---------|
+| 1.0 | 2024-11-14 | Claude Code | Initial comprehensive PRD aligned with CLAUDE.md |
+
+---
+
+**End of Technical PRD**
