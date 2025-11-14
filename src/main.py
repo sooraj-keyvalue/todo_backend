@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.core.config import settings
 from src.core.middleware.error_handling import ErrorHandlingMiddleware
 from src.core.middleware.request_tracking import RequestTrackingMiddleware
+from src.features.health import router as health_router
+from src.features.root import router as root_router
 
 # Create FastAPI application
 app = FastAPI(
@@ -31,85 +33,16 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
     allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
-    allow_methods=[settings.CORS_ALLOW_METHODS],
-    allow_headers=[settings.CORS_ALLOW_HEADERS],
+    allow_methods=settings.CORS_ALLOW_METHODS,
+    allow_headers=settings.CORS_ALLOW_HEADERS,
 )
 
+# Include routers
+app.include_router(root_router)
+app.include_router(health_router)
 
-@app.get("/health/live", tags=["Health"])
-async def liveness_check() -> dict[str, str]:
-    """
-    Liveness probe endpoint.
-    Returns 200 if the application is running.
-    """
-    return {"status": "alive"}
-
-
-@app.get("/health/ready", tags=["Health"])
-async def readiness_check() -> dict[str, str]:
-    """
-    Readiness probe endpoint.
-    Returns 200 if the application is ready to serve requests.
-    """
-    return {"status": "ready"}
-
-
-@app.get("/", tags=["Root"])
-async def root() -> dict[str, str]:
-    """Root endpoint with API information."""
-    return {
-        "name": settings.APP_NAME,
-        "version": settings.APP_VERSION,
-        "environment": settings.ENVIRONMENT,
-        "docs": "/docs",
-    }
-
-
-# Test endpoints for error handling (for testing purposes)
+# Include test router only in DEBUG mode
 if settings.DEBUG:
-    from src.core.exceptions import (
-        AuthenticationException,
-        AuthorizationException,
-        BadRequestException,
-        ConflictException,
-        NotFoundException,
-        ValidationException,
-    )
+    from src.features.test import router as test_router
 
-    @app.get("/test/error/not-found", tags=["Test"], include_in_schema=False)
-    async def test_not_found() -> None:
-        """Test endpoint that raises NotFoundException."""
-        raise NotFoundException(message="Test resource not found")
-
-    @app.get("/test/error/validation", tags=["Test"], include_in_schema=False)
-    async def test_validation() -> None:
-        """Test endpoint that raises ValidationException."""
-        raise ValidationException(
-            message="Test validation failed",
-            details={"field": "test_field", "error": "test error"},
-        )
-
-    @app.get("/test/error/auth", tags=["Test"], include_in_schema=False)
-    async def test_authentication() -> None:
-        """Test endpoint that raises AuthenticationException."""
-        raise AuthenticationException(message="Test authentication failed")
-
-    @app.get("/test/error/forbidden", tags=["Test"], include_in_schema=False)
-    async def test_authorization() -> None:
-        """Test endpoint that raises AuthorizationException."""
-        raise AuthorizationException(message="Test permission denied")
-
-    @app.get("/test/error/conflict", tags=["Test"], include_in_schema=False)
-    async def test_conflict() -> None:
-        """Test endpoint that raises ConflictException."""
-        raise ConflictException(message="Test resource conflict")
-
-    @app.get("/test/error/bad-request", tags=["Test"], include_in_schema=False)
-    async def test_bad_request() -> None:
-        """Test endpoint that raises BadRequestException."""
-        raise BadRequestException(message="Test bad request")
-
-    @app.get("/test/error/internal", tags=["Test"], include_in_schema=False)
-    async def test_internal_error() -> None:
-        """Test endpoint that raises unexpected exception."""
-        raise ValueError("Test unexpected error")
+    app.include_router(test_router)
